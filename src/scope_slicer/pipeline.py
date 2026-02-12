@@ -1,7 +1,7 @@
 import torch
 
-from .effects.kaleido import apply_kaleidoscope
-from .schema import KaleidoScopeParams
+from .effects.scope_slicer import apply_slicer
+from .schema import SlicerParams
 
 try:
     from scope.types import UsageType
@@ -11,15 +11,15 @@ except Exception:  # pragma: no cover
         MAIN = "main"
 
 
-class KaleidoScopePipeline:
-    id = "kaleido_scope"
-    name = "Kaleido Scope"
-    description = "Kaleidoscope effect with prompt-length driven slice count"
+class SlicerPipeline:
+    id = "scope_slicer"
+    name = "Slicer"
+    description = "Slicer effect with prompt-length driven slice count"
     usage = [getattr(UsageType, "PIPELINE", getattr(UsageType, "MAIN", "pipeline"))]
-    params_schema = KaleidoScopeParams
+    params_schema = SlicerParams
 
     def __call__(self, **kwargs):
-        params = KaleidoScopeParams(
+        params = SlicerParams(
             base_slices=kwargs.get("base_slices", 6),
             max_slices=kwargs.get("max_slices", 24),
             mix=kwargs.get("mix", 1.0),
@@ -34,7 +34,7 @@ class KaleidoScopePipeline:
             return {"video": video}
 
         frames = torch.stack(video, dim=0) if isinstance(video, list) else video
-        effected = apply_kaleidoscope(frames, slices)
+        effected = apply_slicer(frames, slices)
         mixed = frames * (1.0 - params.mix) + effected * params.mix
 
         return {"video": mixed.clamp(0, 1)}
