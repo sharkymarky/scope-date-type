@@ -4,8 +4,8 @@ import torch
 import torch.nn.functional as F
 
 
-def apply_kaleidoscope(frames: torch.Tensor, slices: int) -> torch.Tensor:
-    """Apply a rotational kaleidoscope remap using grid_sample."""
+def apply_slicer(frames: torch.Tensor, slices: int) -> torch.Tensor:
+    """Apply a rotational slicer remap using grid_sample."""
     b, _, h, w = frames.shape
     device = frames.device
     dtype = frames.dtype
