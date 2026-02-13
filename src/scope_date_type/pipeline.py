@@ -198,4 +198,13 @@ class DateTypePipeline(Pipeline):
                 text_influence=text_influence,
                 date_influence=date_influence,
                 len_norm=len_norm,
-                cadence_norm=cad
+                cadence_norm=cadence_norm,
+                revision_norm=revision_norm,
+                pause_norm=pause_norm,
+                structure_norm=structure_norm,
+                date_params=date_params,
+            )
+
+        return {"video": out.clamp(0, 1)}
+
+
