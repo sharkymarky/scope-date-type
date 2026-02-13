@@ -1,20 +1,15 @@
 [project]
-name = "slicer"
+name = "scope-date-type"
 version = "0.1.0"
-description = "GPU-accelerated slicer effect plugin for Daydream Scope"
-license = "MIT"
+description = "DATE / TYPE — prompt-driven temporal photography effects for Daydream Scope"
 requires-python = ">=3.12"
-dependencies = [
-  "torch",
-  "pydantic>=2",
-]
 
 [project.entry-points."scope"]
-slicer = "slicer:SlicerPipeline"
+scope_date_type = "scope_date_type"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/slicer"]
+packages = ["src/scope_date_type"]
