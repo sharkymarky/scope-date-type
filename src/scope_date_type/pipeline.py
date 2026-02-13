@@ -1,75 +1,17 @@
-from __future__ import annotations
-
-import datetime as _dt
-import hashlib
-import string
-import time
-from typing import TYPE_CHECKING, Any
-
-import torch
-
-from scope.core.pipelines.interface import Pipeline, Requirements
-
-from .effects import multi_exposure_plate, slit_scan_bands
-from .schema import DateTypeConfig, DateTypeMode, ScanOrientation
-
-if TYPE_CHECKING:
-    from scope.core.pipelines.base_schema import BasePipelineConfig
-
-# --------------------
-# Prompt helpers
-# --------------------
-
-def _extract_prompt_text(prompts: Any) -> str:
-    """
-    Be permissive:
-    - Daydream API sends prompts as list[{"text": str, "weight": float}]
-    - Internal pipeline layers may wrap them in objects with a .text attribute
-    """
-    if prompts is None:
-        return ""
-    if isinstance(prompts, (list, tuple)):
-        parts: list[str] = []
-        for p in prompts:
-            if p is None:
-                continue
-            if isinstance(p, dict):
-                t = p.get("text") or p.get("prompt") or ""
-            else:
-                t = getattr(p, "text", None) or getattr(p, "prompt", None) or ""
-            t = str(t).strip()
-            if t:
-                parts.append(t)
-        return " | ".join(parts)
-    # Fallback
-    return str(prompts).strip()
-
-
-def _count_punct_and_space(s: str) -> tuple[int, int]:
-    punct = 0
-    spaces = 0
-    for ch in s:
-        if ch.isspace():
-            spaces += 1
-        elif ch in string.punctuation:
-            punct += 1
-    return punct, spaces
-
-
-def _safe_div(a: float, b: float) -> float:
-    return a / b if b != 0 else 0.0
-
-
-# --------------------
-# Pipeline
-# --------------------
-
 class DateTypePipeline(Pipeline):
     """DATE / TYPE — prompt-driven temporal photography pipeline."""
 
     @classmethod
     def get_config_class(cls) -> type["BasePipelineConfig"]:
         return DateTypeConfig
+
+    def __init__(self, **kwargs):
+        # Scope passes load params like height/width here.
+        # Base Pipeline may or may not accept kwargs, so guard it.
+        try:
+            super().__init__(**kwargs)
+        except TypeError:
+            pass
 
         # Typing state
         self._prev_text: str = ""
@@ -85,13 +27,11 @@ class DateTypePipeline(Pipeline):
         self._cached_date_bias_01: float = 0.5
 
     def prepare(self, **kwargs) -> Requirements:
-        # buffer_len is marked load-time in schema (is_load_param=True)
         buffer_len = int(kwargs.get("buffer_len", 60))
         buffer_len = max(8, min(240, buffer_len))
         return Requirements(input_size=buffer_len)
 
     def _get_date_params(self) -> tuple[str, int, float, float, float]:
-        # Use local system date of the machine running Scope.
         date_key = _dt.date.today().isoformat()
         if date_key == self._cached_date_key:
             return (
@@ -105,7 +45,6 @@ class DateTypePipeline(Pipeline):
         digest = hashlib.sha256(date_key.encode("utf-8")).digest()
         seed_int = int.from_bytes(digest[:8], "big", signed=False)
 
-        # phase in [0, 1)
         phase_01 = ((seed_int % 1_000_000) / 1_000_000.0)
         flip_01 = digest[8] / 255.0
         bias_01 = digest[9] / 255.0
@@ -123,17 +62,13 @@ class DateTypePipeline(Pipeline):
         if video is None:
             raise ValueError("DateTypePipeline requires video input")
 
-        # Stack frames -> (T, H, W, C), normalize to [0, 1]
         frames_u8 = torch.stack([frame.squeeze(0) for frame in video], dim=0)  # (T,H,W,C)
-        frames = frames_u8.to(dtype=torch.float32) / 255.0                     # stays on same device
+        frames = frames_u8.to(dtype=torch.float32) / 255.0
 
-
-        # Read prompt stream (read-only)
         prompts = kwargs.get("prompts", None)
         transition = kwargs.get("transition", None)
         text = _extract_prompt_text(prompts)
 
-        # Timing
         now = time.monotonic()
         if self._prev_call_t is None:
             dt = 1.0 / 30.0
@@ -141,7 +76,6 @@ class DateTypePipeline(Pipeline):
             dt = max(1e-3, now - self._prev_call_t)
         self._prev_call_t = now
 
-        # Structural typing signals
         char_len = len(text)
         words = [w for w in text.strip().split() if w]
         word_count = len(words)
@@ -150,32 +84,26 @@ class DateTypePipeline(Pipeline):
         structure_density = _safe_div(float(punct_count + space_count), float(max(1, char_len)))
 
         delta_len = char_len - self._prev_len
-        cadence = abs(delta_len) / dt  # chars/sec (proxy for typing + edits)
-        revision = max(0, -delta_len) / dt  # deletion pressure
+        cadence = abs(delta_len) / dt
+        revision = max(0, -delta_len) / dt
 
         changed = (delta_len != 0) or (text != self._prev_text)
         if changed:
             self._last_change_t = now
-        if self._last_change_t is None:
-            pause = 0.0
-        else:
-            pause = max(0.0, now - self._last_change_t)
+        pause = 0.0 if self._last_change_t is None else max(0.0, now - self._last_change_t)
 
-        # Transition flag acts like a "structural event" (not semantics).
         if transition:
-            revision = max(revision, 12.0)  # gentle bump
+            revision = max(revision, 12.0)
 
-        # Normalize to [0, 1] with conservative heuristics
         len_norm = min(1.0, char_len / 240.0)
-        cadence_norm = min(1.0, cadence / 24.0)      # ~24 chars/sec feels "fast"
+        cadence_norm = min(1.0, cadence / 24.0)
         revision_norm = min(1.0, revision / 24.0)
-        pause_norm = min(1.0, pause / 2.0)           # 2s pause => near 1.0
+        pause_norm = min(1.0, pause / 2.0)
         structure_norm = min(1.0, structure_density / 0.35)
 
         self._prev_text = text
         self._prev_len = char_len
 
-        # UI controls
         enabled = bool(kwargs.get("enabled", True))
         mode = kwargs.get("mode", DateTypeMode.slit_scan)
         orientation = kwargs.get("orientation", ScanOrientation.vertical)
@@ -192,11 +120,14 @@ class DateTypePipeline(Pipeline):
         if not enabled:
             return {"video": frames[-1:].clamp(0, 1)}
 
-        # Date params (deterministic daily constraint)
         date_key, seed_int, phase_01, flip_01, bias_01 = self._get_date_params()
+        date_params = type(
+            "DateParams",
+            (),
+            {"date_key": date_key, "seed_int": seed_int, "phase_01": phase_01, "flip_01": flip_01, "bias_01": bias_01},
+        )()
 
-        # Dispatch
-        if str(mode) == str(DateTypeMode.multi_exposure.value) or mode == DateTypeMode.multi_exposure:
+        if mode == DateTypeMode.multi_exposure or str(mode) == str(DateTypeMode.multi_exposure.value):
             out = multi_exposure_plate(
                 frames_thwc=frames,
                 mix=mix,
@@ -207,13 +138,7 @@ class DateTypePipeline(Pipeline):
                 cadence_norm=cadence_norm,
                 revision_norm=revision_norm,
                 pause_norm=pause_norm,
-                date_params=type("DateParams", (), {
-                    "date_key": date_key,
-                    "seed_int": seed_int,
-                    "phase_01": phase_01,
-                    "flip_01": flip_01,
-                    "bias_01": bias_01,
-                })(),
+                date_params=date_params,
             )
         else:
             out = slit_scan_bands(
@@ -229,13 +154,7 @@ class DateTypePipeline(Pipeline):
                 revision_norm=revision_norm,
                 pause_norm=pause_norm,
                 structure_norm=structure_norm,
-                date_params=type("DateParams", (), {
-                    "date_key": date_key,
-                    "seed_int": seed_int,
-                    "phase_01": phase_01,
-                    "flip_01": flip_01,
-                    "bias_01": bias_01,
-                })(),
+                date_params=date_params,
             )
 
         return {"video": out.clamp(0, 1)}
